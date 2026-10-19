@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { allPresets } from '../engine/seed.js';
-import { exportScenario, validateImport } from '../engine/schema.js';
+import { exportScenario, validateImport, pruneDisruptions } from '../engine/schema.js';
 
 function nextId(prefix, items) {
   let n = items.length + 1;
@@ -9,13 +9,25 @@ function nextId(prefix, items) {
   return `${prefix}${n}`;
 }
 
-export default function TestLab({ scenario, setScenario, disruptions, onImportScenario, onSaveBaseline, notice }) {
+export default function TestLab({ scenario, setScenario, disruptions, setDisruptions, onImportScenario, onSaveBaseline, notice }) {
   const [importText, setImportText] = useState('');
   const [importMsg, setImportMsg] = useState(null);
   const presets = allPresets();
 
   const upd = (fn) => setScenario((prev) => { const copy = JSON.parse(JSON.stringify(prev)); fn(copy); return copy; });
-  const setTerm = (id, field, value) => upd((c) => { const t = c.terminals.find((x) => x.id === id); if (t) t[field] = field === 'name' ? value : Number(value); });
+  // Deleting a record also deletes every disruption that references it (or
+  // references a record removed as a consequence), so the working state can
+  // never export a file its own importer would reject.
+  const deleteWithCleanup = (mutate) => {
+    const copy = JSON.parse(JSON.stringify(scenario));
+    mutate(copy);
+    setScenario(copy);
+    if (setDisruptions) setDisruptions(pruneDisruptions(disruptions, copy));
+  };
+  const removeTerminal = (id) => deleteWithCleanup((c) => { c.terminals = c.terminals.filter((x) => x.id !== id); c.connections = c.connections.filter((x) => x.a !== id && x.b !== id); c.shipments = c.shipments.filter((s) => s.origin !== id && s.destination !== id); });
+  const removeConnection = (id) => deleteWithCleanup((c) => { c.connections = c.connections.filter((x) => x.id !== id); });
+  const removeShipment = (id) => deleteWithCleanup((c) => { c.shipments = c.shipments.filter((x) => x.id !== id); });
+  const setTerm = (id, field, value) => upd((c) => { const t = c.terminals.find((x) => x.id === id); if (t) t[field] = field === 'name' ? value : (Number.isFinite(Number(value)) ? Number(value) : 0); });
   const setConn = (id, field, value) => upd((c) => { const x = c.connections.find((y) => y.id === id); if (x) x[field] = (field === 'a' || field === 'b') ? value : Math.max(1, Math.floor(Number(value) || 1)); });
   const setShip = (id, field, value) => upd((c) => { const s = c.shipments.find((y) => y.id === id); if (s) s[field] = ['origin', 'destination', 'priority', 'commodity'].includes(field) ? value : Math.max(0, Math.floor(Number(value) || 0)); });
 
@@ -49,7 +61,7 @@ export default function TestLab({ scenario, setScenario, disruptions, onImportSc
             <td><input value={t.name} onChange={(e) => setTerm(t.id, 'name', e.target.value)} aria-label={`Name of ${t.id}`} /></td>
             <td><input type="number" value={t.x} onChange={(e) => setTerm(t.id, 'x', e.target.value)} style={{ width: 70 }} aria-label={`X of ${t.id}`} /></td>
             <td><input type="number" value={t.y} onChange={(e) => setTerm(t.id, 'y', e.target.value)} style={{ width: 70 }} aria-label={`Y of ${t.id}`} /></td>
-            <td><button className="danger" onClick={() => upd((c) => { c.terminals = c.terminals.filter((x) => x.id !== t.id); c.connections = c.connections.filter((x) => x.a !== t.id && x.b !== t.id); c.shipments = c.shipments.filter((s) => s.origin !== t.id && s.destination !== t.id); })}>Remove</button></td></tr>)}</tbody></table></div>
+            <td><button className="danger" onClick={() => removeTerminal(t.id)}>Remove</button></td></tr>)}</tbody></table></div>
         <button onClick={() => upd((c) => { const id = nextId('T', c.terminals); c.terminals.push({ id, name: `Terminal ${id}`, x: 100 + c.terminals.length * 40, y: 200 }); })}>Add terminal</button>
 
         <h3>Connections ({scenario.connections.length})</h3>
@@ -59,7 +71,7 @@ export default function TestLab({ scenario, setScenario, disruptions, onImportSc
             <td><select value={c.b} onChange={(e) => setConn(c.id, 'b', e.target.value)}>{scenario.terminals.map((t) => <option key={t.id} value={t.id}>{t.id}</option>)}</select></td>
             <td><input type="number" min={1} value={c.travelTime} onChange={(e) => setConn(c.id, 'travelTime', e.target.value)} style={{ width: 70 }} /></td>
             <td><input type="number" min={1} value={c.capacity} onChange={(e) => setConn(c.id, 'capacity', e.target.value)} style={{ width: 70 }} /></td>
-            <td><button className="danger" onClick={() => upd((x) => { x.connections = x.connections.filter((y) => y.id !== c.id); })}>Remove</button></td></tr>)}</tbody></table></div>
+            <td><button className="danger" onClick={() => removeConnection(c.id)}>Remove</button></td></tr>)}</tbody></table></div>
         <button disabled={scenario.terminals.length < 2} onClick={() => upd((c) => { const id = nextId('C', c.connections); c.connections.push({ id, a: c.terminals[0].id, b: c.terminals[1].id, travelTime: 2, capacity: 1 }); })}>Add connection</button>
       </div>
 
@@ -73,7 +85,7 @@ export default function TestLab({ scenario, setScenario, disruptions, onImportSc
             <td><input type="number" min={0} value={s.deadline} onChange={(e) => setShip(s.id, 'deadline', e.target.value)} style={{ width: 64 }} /></td>
             <td><select value={s.priority} onChange={(e) => setShip(s.id, 'priority', e.target.value)}><option>critical</option><option>high</option><option>medium</option><option>low</option></select></td>
             <td><input value={s.commodity || ''} onChange={(e) => setShip(s.id, 'commodity', e.target.value)} style={{ width: 110 }} /></td>
-            <td><button className="danger" onClick={() => upd((c) => { c.shipments = c.shipments.filter((x) => x.id !== s.id); })}>Remove</button></td></tr>)}</tbody></table></div>
+            <td><button className="danger" onClick={() => removeShipment(s.id)}>Remove</button></td></tr>)}</tbody></table></div>
         <button disabled={scenario.terminals.length < 2} onClick={() => upd((c) => { const id = nextId('S', c.shipments); c.shipments.push({ id, origin: c.terminals[0].id, destination: c.terminals[1].id, release: 0, deadline: 24, priority: 'medium', commodity: 'general freight' }); })}>Add shipment</button>
       </div>
 

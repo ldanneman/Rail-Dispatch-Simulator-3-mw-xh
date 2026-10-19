@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { blockedDepartureHours } from '../engine/metrics.js';
 
 export function Kpis({ metrics }) {
   const cards = [
@@ -101,7 +102,12 @@ export function ShipmentTable({ scenario, schedule, selectedId, onSelect }) {
 }
 
 export function TimelinePanel({ schedule, hour, setHour, playing, setPlaying, maxHour }) {
-  const routed = schedule.results.filter((r) => r.status === 'routed');
+  const [showAll, setShowAll] = useState(false);
+  const routedAll = schedule.results.filter((r) => r.status === 'routed');
+  const routed = showAll ? routedAll : routedAll.slice(0, 60);
+  const movements = routedAll.flatMap((r) => r.legs.map((leg, i) => ({ r, leg, i }))).filter(({ leg }) => leg.depart <= hour)
+    .sort((a, b) => a.leg.depart - b.leg.depart || a.r.shipmentId.localeCompare(b.r.shipmentId));
+  const shownMovements = showAll ? movements : movements.slice(0, 120);
   const scale = Math.max(24, maxHour + 2);
   return (
     <div className="panel">
@@ -113,41 +119,49 @@ export function TimelinePanel({ schedule, hour, setHour, playing, setPlaying, ma
           <input type="range" min={0} max={scale} value={hour} onChange={(e) => setHour(Number(e.target.value))} aria-label="Playback hour" />
         </div></div>
       <p className="small muted">Each bar is one connection leg, positioned by departure–arrival hour. Shipments at or before the current playback hour are listed below. Playback is a viewing aid; scheduling itself is instantaneous.</p>
+      <div className="row"><button onClick={() => setShowAll(!showAll)}>{showAll ? 'Show first 60 shipments / 120 movements' : `Show all ${routedAll.length} routed shipments`}</button>
+        <span className="small muted">Showing {routed.length} of {routedAll.length} routed shipments; {shownMovements.length} of {movements.length} movements at this hour.</span></div>
       <div className="scroll" style={{ maxHeight: 380 }}>
-        {routed.slice(0, 60).map((r) => (
+        {routed.map((r) => (
           <div className="gantt-row" key={r.shipmentId}><span className="gantt-label">{r.shipmentId}</span>
             <div className="gantt-track">{r.legs.map((leg, i) => (
               <div key={i} className={`gantt-leg ${r.late ? 'late' : ''}`} title={`${leg.connectionId}: depart ${leg.depart}, arrive ${leg.arrive}`}
                 style={{ left: `${(leg.depart / scale) * 100}%`, width: `${Math.max(1, ((leg.arrive - leg.depart) / scale) * 100)}%`, opacity: leg.depart <= hour ? 1 : 0.25 }} />))}
             </div><span className="mono small">→ {r.arrival}</span></div>
         ))}
-        {routed.length > 60 && <p className="small muted">Showing first 60 routed shipments; use the Shipments tab for the full list.</p>}
       </div>
       <h3>Movements departing at or before hour {hour}</h3>
       <div className="scroll" style={{ maxHeight: 220 }}><table><thead><tr><th>Shipment</th><th>Connection</th><th>From → To</th><th>Depart</th><th>Arrive</th></tr></thead>
-        <tbody>{routed.flatMap((r) => r.legs.map((leg, i) => ({ r, leg, i }))).filter(({ leg }) => leg.depart <= hour)
-          .sort((a, b) => a.leg.depart - b.leg.depart || a.r.shipmentId.localeCompare(b.r.shipmentId)).slice(0, 120)
+        <tbody>{shownMovements
           .map(({ r, leg, i }) => <tr key={`${r.shipmentId}-${i}`}><td className="mono">{r.shipmentId}</td><td className="mono">{leg.connectionId}</td><td>{leg.from} → {leg.to}</td><td className="mono">{leg.depart}</td><td className="mono">{leg.arrive}</td></tr>)}</tbody></table></div>
     </div>
   );
 }
 
 export function CapacityPanel({ scenario, schedule, connectionId, setConnectionId }) {
+  const [range, setRange] = useState('all');
   const conn = scenario.connections.find((c) => c.id === connectionId) || scenario.connections[0];
   if (!conn) return <div className="panel"><h2>Capacity inspection</h2><p className="muted">No connections defined.</p></div>;
   const eff = schedule.effectiveConnections.find((c) => c.id === conn.id) || conn;
-  const hours = 72;
+  const blocked = blockedDepartureHours(eff, schedule.closures, 168);
+  const ranges = { all: [0, 168], early: [0, 72], late: [72, 168] };
+  const [lo, hi] = ranges[range] || ranges.all;
   return (
     <div className="panel">
-      <div className="row spread"><h2>Capacity inspection by hour</h2>
-        <select value={conn.id} onChange={(e) => setConnectionId(e.target.value)} aria-label="Select connection">
-          {scenario.connections.map((c) => <option key={c.id} value={c.id}>{c.id}: {c.a}–{c.b} (cap {c.capacity}/h)</option>)}
-        </select></div>
-      <p className="small muted">Each cell shows departures entering {conn.id} in that hour / effective capacity {eff.capacity}. Verify no cell exceeds capacity. Hours 0–{hours - 1} shown; later hours follow the same rule.</p>
+      <div className="row spread"><h2>Capacity inspection by hour (full 168h horizon)</h2>
+        <div className="row">
+          <select value={range} onChange={(e) => setRange(e.target.value)} aria-label="Hour range">
+            <option value="all">All hours 0–167</option><option value="early">Hours 0–71</option><option value="late">Hours 72–167</option>
+          </select>
+          <select value={conn.id} onChange={(e) => setConnectionId(e.target.value)} aria-label="Select connection">
+            {scenario.connections.map((c) => <option key={c.id} value={c.id}>{c.id}: {c.a}–{c.b} (cap {c.capacity}/h)</option>)}
+          </select>
+        </div></div>
+      <p className="small muted">Each cell shows departures entering {conn.id} in that hour / effective capacity {eff.capacity}. Verify no cell exceeds capacity. Cells marked <strong>closed</strong> are departure hours whose {eff.travelTime}h traversal would overlap a closure — effective capacity there is 0 and the scheduler cannot use them. Showing hours {lo}–{hi - 1} of 0–167.</p>
       <div className="capgrid">
-        {Array.from({ length: hours }, (_, h) => { const used = schedule.used[`${conn.id}|${h}`] || 0; return (
-          <div key={h} className={`capcell ${used >= eff.capacity && used > 0 ? 'full' : used > 0 ? 'part' : ''}`} title={`Hour ${h}: ${used}/${eff.capacity}`}>
-            <div>h{h}</div><div>{used}/{eff.capacity}</div></div>); })}
+        {Array.from({ length: hi - lo }, (_, i) => { const h = lo + i; const used = schedule.used[`${conn.id}|${h}`] || 0; const isClosed = blocked.has(h); return (
+          <div key={h} className={`capcell ${isClosed ? 'closed' : used >= eff.capacity && used > 0 ? 'full' : used > 0 ? 'part' : ''}`} title={isClosed ? `Hour ${h}: closed (traversal overlaps a closure)` : `Hour ${h}: ${used}/${eff.capacity}`}>
+            <div>h{h}</div><div>{isClosed ? 'closed' : `${used}/${eff.capacity}`}</div></div>); })}
       </div>
     </div>
   );

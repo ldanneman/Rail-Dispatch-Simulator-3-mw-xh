@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { validateDisruptionInput } from '../engine/schema.js';
 
 export function DisruptionPanel({ scenario, disruptions, setDisruptions }) {
   const [type, setType] = useState('closure');
@@ -6,13 +7,24 @@ export function DisruptionPanel({ scenario, disruptions, setDisruptions }) {
   const [shipmentId, setShipmentId] = useState(scenario.shipments[0]?.id || '');
   const [start, setStart] = useState(9); const [end, setEnd] = useState(12);
   const [num, setNum] = useState(2);
+  const [formError, setFormError] = useState(null);
+  // Selections can go stale when the scenario changes; fall back to the
+  // first available record so the form never submits a ghost reference.
+  const connId = scenario.connections.some((c) => c.id === connectionId) ? connectionId : scenario.connections[0]?.id || '';
+  const shipId = scenario.shipments.some((s) => s.id === shipmentId) ? shipmentId : scenario.shipments[0]?.id || '';
   const add = () => {
-    const id = `D${Date.now().toString(36)}`;
+    let n = disruptions.length + 1;
+    const taken = new Set(disruptions.map((d) => d.id));
+    while (taken.has(`DX${n}`)) n++;
+    const id = `DX${n}`;
     let d;
-    if (type === 'closure') d = { id, type, connectionId, start: Number(start), end: Number(end) };
-    else if (type === 'travelTime') d = { id, type, connectionId, newTravelTime: Number(num) };
-    else if (type === 'capacity') d = { id, type, connectionId, newCapacity: Number(num) };
-    else d = { id, type, shipmentId, delayHours: Number(num) };
+    if (type === 'closure') d = { id, type, connectionId: connId, start: Number(start), end: Number(end) };
+    else if (type === 'travelTime') d = { id, type, connectionId: connId, newTravelTime: Number(num) };
+    else if (type === 'capacity') d = { id, type, connectionId: connId, newCapacity: Number(num) };
+    else d = { id, type, shipmentId: shipId, delayHours: Number(num) };
+    const err = validateDisruptionInput(d, scenario);
+    if (err) { setFormError(`${err} Disruption not added — all times and counts must be whole hours (spec §11).`); return; }
+    setFormError(null);
     setDisruptions([...disruptions, d]);
   };
   const describe = (d) => {
@@ -29,16 +41,17 @@ export function DisruptionPanel({ scenario, disruptions, setDisruptions }) {
         <label className="f">Type<select value={type} onChange={(e) => setType(e.target.value)}>
           <option value="closure">Close connection</option><option value="travelTime">Increase travel time</option>
           <option value="capacity">Reduce capacity</option><option value="releaseDelay">Delay shipment release</option></select></label>
-        {(type !== 'releaseDelay') && <label className="f">Connection<select value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
+        {(type !== 'releaseDelay') && <label className="f">Connection<select value={connId} onChange={(e) => setConnectionId(e.target.value)}>
           {scenario.connections.map((c) => <option key={c.id} value={c.id}>{c.id}: {c.a}–{c.b}</option>)}</select></label>}
-        {type === 'releaseDelay' && <label className="f">Shipment<select value={shipmentId} onChange={(e) => setShipmentId(e.target.value)}>
+        {type === 'releaseDelay' && <label className="f">Shipment<select value={shipId} onChange={(e) => setShipmentId(e.target.value)}>
           {scenario.shipments.map((s) => <option key={s.id} value={s.id}>{s.id}: {s.origin}→{s.destination}</option>)}</select></label>}
-        {type === 'closure' && <><label className="f">Start hour<input type="number" value={start} onChange={(e) => setStart(e.target.value)} style={{ width: 80 }} /></label>
-          <label className="f">End hour<input type="number" value={end} onChange={(e) => setEnd(e.target.value)} style={{ width: 80 }} /></label></>}
+        {type === 'closure' && <><label className="f">Start hour<input type="number" step={1} value={start} onChange={(e) => setStart(e.target.value)} style={{ width: 80 }} /></label>
+          <label className="f">End hour<input type="number" step={1} value={end} onChange={(e) => setEnd(e.target.value)} style={{ width: 80 }} /></label></>}
         {type !== 'closure' && <label className="f">{type === 'travelTime' ? 'New travel time (h)' : type === 'capacity' ? 'New capacity (/h)' : 'Delay (h)'}
-          <input type="number" min={type === 'releaseDelay' ? 0 : 1} value={num} onChange={(e) => setNum(e.target.value)} style={{ width: 90 }} /></label>}
+          <input type="number" step={1} min={type === 'releaseDelay' ? 0 : 1} value={num} onChange={(e) => setNum(e.target.value)} style={{ width: 90 }} /></label>}
         <button className="primary" onClick={add}>Add disruption &amp; recalculate</button>
       </div>
+      {formError && <div className="error" role="alert">{formError}</div>}
       <h3>Active disruptions ({disruptions.length})</h3>
       {disruptions.length === 0 && <p className="muted">None. The current schedule is the undisrupted plan for the working scenario.</p>}
       {disruptions.map((d) => <div key={d.id} className="row spread alert"><span>{describe(d)}</span>
@@ -50,7 +63,7 @@ export function DisruptionPanel({ scenario, disruptions, setDisruptions }) {
 
 export function ComparePanel({ comparison }) {
   if (!comparison) return null;
-  const { base, current, delta, affected, rerouted } = comparison;
+  const { base, current, delta, affected, rerouted, newlyLate = [] } = comparison;
   const fmt = (v, suffix = '') => `${v >= 0 ? '+' : ''}${v.toFixed(1)}${suffix}`;
   return (
     <div className="panel">
@@ -61,6 +74,7 @@ export function ComparePanel({ comparison }) {
         <tr><td>Average delay (routed)</td><td className="mono">{base.avgDelay.toFixed(2)}h</td><td className="mono">{current.avgDelay.toFixed(2)}h</td><td className="mono">{fmt(delta.avgDelay, 'h')}</td></tr>
         <tr><td>Network capacity utilization</td><td className="mono">{base.networkUtilization.toFixed(1)}%</td><td className="mono">{current.networkUtilization.toFixed(1)}%</td><td className="mono">{fmt(delta.utilization, ' pts')}</td></tr>
         <tr><td>Rerouted shipments</td><td className="mono">—</td><td className="mono">{rerouted.length}</td><td className="mono">{rerouted.join(', ') || 'none'}</td></tr>
+        <tr><td>Newly late shipments</td><td className="mono">—</td><td className="mono">{newlyLate.length}</td><td className="mono">{newlyLate.join(', ') || 'none'}</td></tr>
         <tr><td>Undeliverable shipments</td><td className="mono">{base.undeliverable}</td><td className="mono">{current.undeliverable}</td><td className="mono">{delta.undeliverable >= 0 ? '+' : ''}{delta.undeliverable}</td></tr>
       </tbody></table>
       <h3>Affected shipments ({affected.length})</h3>

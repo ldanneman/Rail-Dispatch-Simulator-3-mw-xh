@@ -96,7 +96,7 @@ describe('scheduler invariants (spec §8)', () => {
     expect(k1.arrival).toBe(2); expect(k1.late).toBe(false);
   });
 
-  it('applies travel-time and capacity disruptions', () => {
+  it('applies travel-time and release-delay disruptions', () => {
     const sc = ref();
     const sch = scheduleScenario(sc, [{ id: 'D1', type: 'travelTime', connectionId: 'C1', newTravelTime: 3 }]);
     expect(sch.results[0].arrival).toBe(8 + 3 + 1);

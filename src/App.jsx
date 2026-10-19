@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { generateDefaultDataset } from './engine/seed.js';
 import { scheduleScenario } from './engine/scheduler.js';
 import { computeMetrics, compareSchedules } from './engine/metrics.js';
-import { persistState, loadPersisted, clearPersisted } from './engine/schema.js';
+import { persistState, loadPersisted, clearPersisted, isValidPersistedState } from './engine/schema.js';
 import NetworkMap, { RouteDetail } from './components/NetworkMap.jsx';
 import { Kpis, AlertsPanel, UtilizationPanel, ThroughputPanel, ShipmentTable, TimelinePanel, CapacityPanel } from './components/Panels.jsx';
 import TestLab from './components/TestLab.jsx';
@@ -22,7 +22,7 @@ function defaultState() {
 
 function initialState() {
   const saved = loadPersisted();
-  if (saved && saved.baseline && saved.working && Array.isArray(saved.disruptions)) return saved;
+  if (isValidPersistedState(saved)) return saved;
   return defaultState();
 }
 
@@ -114,7 +114,7 @@ export default function App() {
         {tab === 'timeline' && <TimelinePanel schedule={schedule} hour={hour} setHour={setHour} playing={playing} setPlaying={setPlaying} maxHour={metrics.maxArrival} />}
 
         {tab === 'testlab' && <>
-          <TestLab scenario={working} setScenario={setWorking} disruptions={disruptions} onImportScenario={loadScenario} onSaveBaseline={saveBaseline} notice={notice} />
+          <TestLab scenario={working} setScenario={setWorking} disruptions={disruptions} setDisruptions={setDisruptions} onImportScenario={loadScenario} onSaveBaseline={saveBaseline} notice={notice} />
           <CapacityPanel scenario={working} schedule={schedule} connectionId={selectedConnection || working.connections[0]?.id} setConnectionId={setSelectedConnection} />
           <div className="panel"><h2>Detailed scheduling inspector</h2>
             <div className="row"><label className="small">Shipment <select value={selShipment?.id || ''} onChange={(e) => setSelectedShipment(e.target.value)}>
@@ -139,7 +139,7 @@ export default function App() {
           <h3>Reference scenario</h3>
           <p>Test Lab → “Reference: Three-Terminal (A-B-C)”: A–B and B–C each take 1h at capacity 1/h; three A→C shipments release at hour 8. Expected arrivals are 10, 11, and 12 — verified by an automated test. Full documentation lives in the Obsidian vault folder <span className="mono">Rail_Dispatch_Simulator_muse_wonder_1.0-xhigh</span>.</p>
           <h3>Known limitations</h3>
-          <p>Greedy ordering can leave later low-priority shipments late even when a different global assignment would do better; capacity is a departure-slot simplification (no in-transit or terminal handling limits); travel times are deterministic with no stochastic delays; the timeline Gantt lists the first 60 routed shipments. The JSON box export includes disruptions; downloaded files use the same schema v1.</p>
+          <p>Greedy ordering can leave later low-priority shipments late even when a different global assignment would do better; capacity is a departure-slot simplification (no in-transit or terminal handling limits); travel times are deterministic with no stochastic delays. All inputs are validated in whole hours: fractional or negative disruption values are rejected at the form and dropped by the engine if they ever arrive another way. The JSON box export includes disruptions; downloaded files use the same schema v1.</p>
         </div>}
       </main>
     </div>

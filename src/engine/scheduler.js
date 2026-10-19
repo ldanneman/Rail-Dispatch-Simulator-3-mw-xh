@@ -9,6 +9,24 @@
 // (more urgent) shipments get first claim on capacity.
 import { HORIZON, PRIORITY_WEIGHT } from './seed.js';
 
+// Fail-closed guard: malformed disruptions (fractional hours, negative
+// delays, unknown references, bad closure windows) are dropped so no input
+// path — form, import, or stale persisted state — can produce a fractional
+// or negative-time schedule. Valid disruptions pass through unchanged.
+export function sanitizeDisruptions(disruptions = [], connections = [], shipments = []) {
+  if (!Array.isArray(disruptions)) return [];
+  const cids = new Set(connections.map((c) => c.id));
+  const sids = new Set(shipments.map((s) => s.id));
+  return disruptions.filter((d) => {
+    if (!d || typeof d !== 'object') return false;
+    if (d.type === 'closure') return cids.has(d.connectionId) && Number.isInteger(d.start) && Number.isInteger(d.end) && d.start >= 0 && d.end > d.start;
+    if (d.type === 'travelTime') return cids.has(d.connectionId) && Number.isInteger(d.newTravelTime) && d.newTravelTime >= 1;
+    if (d.type === 'capacity') return cids.has(d.connectionId) && Number.isInteger(d.newCapacity) && d.newCapacity >= 1;
+    if (d.type === 'releaseDelay') return sids.has(d.shipmentId) && Number.isInteger(d.delayHours) && d.delayHours >= 0;
+    return false;
+  });
+}
+
 export function effectiveConnections(connections, disruptions = []) {
   const travel = new Map(); const cap = new Map();
   for (const d of disruptions) {
@@ -50,7 +68,7 @@ function adjacency(connections) {
     adj.get(c.a).push({ conn: c, to: c.b });
     adj.get(c.b).push({ conn: c, to: c.a });
   }
-  for (const list of adj.values()) list.sort((x, y) => x.conn.id.localeCompare(y.conn.id) || x.to.localeCompare(y.to));
+  for (const list of adj.values()) list.sort((x, y) => String(x.conn.id).localeCompare(String(y.conn.id)) || String(x.to).localeCompare(String(y.to)));
   return adj;
 }
 
@@ -74,7 +92,7 @@ function earliestDeparture(conn, earliest, used, closures) {
 function orderShipments(shipments) {
   return [...shipments].sort((a, b) =>
     (PRIORITY_WEIGHT[b.priority] || 0) - (PRIORITY_WEIGHT[a.priority] || 0) ||
-    a.deadline - b.deadline || a.release - b.release || a.id.localeCompare(b.id));
+    a.deadline - b.deadline || a.release - b.release || String(a.id).localeCompare(String(b.id)));
 }
 
 // Time-dependent Dijkstra: cost = (arrival, hops, pathKey) lexicographic.
@@ -108,9 +126,10 @@ function routeOne(shipment, adj, used, closures) {
 }
 
 export function scheduleScenario({ terminals, connections, shipments }, disruptions = []) {
-  const conns = effectiveConnections(connections, disruptions);
-  const ships = effectiveShipments(shipments, disruptions);
-  const closures = closuresByConnection(disruptions);
+  const clean = sanitizeDisruptions(disruptions, connections, shipments);
+  const conns = effectiveConnections(connections, clean);
+  const ships = effectiveShipments(shipments, clean);
+  const closures = closuresByConnection(clean);
   const adj = adjacency(conns);
   const used = new Map(); // "connId|hour" -> departures count
   const results = [];
@@ -118,7 +137,13 @@ export function scheduleScenario({ terminals, connections, shipments }, disrupti
 
   for (const s of orderShipments(ships)) {
     if (s.origin === s.destination) {
-      results.push({ shipmentId: s.id, status: 'routed', legs: [], arrival: s.release, late: s.release > s.deadline, delay: Math.max(0, s.release - s.deadline), reason: null });
+      // Already at destination, but only deliverable if that moment lies
+      // inside the planning horizon (spec §11).
+      if (s.release > HORIZON) {
+        results.push({ shipmentId: s.id, status: 'undeliverable', legs: [], arrival: null, late: false, delay: null, reason: `Release hour ${s.release} is beyond the ${HORIZON}h planning horizon.` });
+      } else {
+        results.push({ shipmentId: s.id, status: 'routed', legs: [], arrival: s.release, late: s.release > s.deadline, delay: Math.max(0, s.release - s.deadline), reason: null });
+      }
       continue;
     }
     const found = routeOne(s, adj, used, closures);
@@ -140,5 +165,5 @@ export function scheduleScenario({ terminals, connections, shipments }, disrupti
   // order above is internal. Determinism is preserved either way.
   const order = new Map(shipments.map((s, i) => [s.id, i]));
   results.sort((a, b) => order.get(a.shipmentId) - order.get(b.shipmentId));
-  return { results, used: Object.fromEntries(used), effectiveConnections: conns, effectiveShipments: ships, byId: Object.fromEntries(byId) };
+  return { results, used: Object.fromEntries(used), effectiveConnections: conns, effectiveShipments: ships, byId: Object.fromEntries(byId), disruptions: clean, closures: Object.fromEntries([...closures].map(([k, v]) => [k, v.map((w) => [...w])])) };
 }
